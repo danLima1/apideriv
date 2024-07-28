@@ -2,14 +2,15 @@ import os
 import json
 import uvicorn
 import xmltodict
+import asyncio
 import websockets
+import pdb  # Para usar o debugger
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pathlib import Path
 from pydantic import BaseModel
 import logging
-import asyncio
 
 load_dotenv()
 
@@ -188,16 +189,10 @@ def initialize_variables(variables, bot_name):
 def extract_strategy(blocks):
     if not isinstance(blocks, list):
         blocks = [blocks]
-
     strategy = {}
     for block in blocks:
         if block['@type'] == 'trade':
             strategy['trade_config'] = extract_trade_config(block)
-        elif block['@type'] == 'before_purchase':
-            strategy['purchase_conditions'] = extract_purchase_conditions(
-                block)
-        # ... (processamento para 'after_purchase' se necessário)
-
     logging.info(f"Extracted strategy: {strategy}")
     return strategy
 
@@ -214,14 +209,15 @@ def extract_trade_config(trade_block):
 def extract_purchase_conditions(purchase_block):
     conditions = []
     if 'statement' in purchase_block and 'BEFOREPURCHASE_STACK' in purchase_block['statement']:
-        stack_block = \
-        purchase_block['statement']['BEFOREPURCHASE_STACK']['block']
+        stack_block = purchase_block['statement']['BEFOREPURCHASE_STACK']['block']
         if stack_block['@type'] == 'controls_if':
-            conditions.append(
-                extract_condition(stack_block['value']['IF0']['block']))
-            if 'statement' in stack_block and 'ELSE' in stack_block['statement']:
-                conditions.append(
-                    extract_condition(stack_block['statement']['ELSE']['block']))
+            # Corrigido: Navegação correta pela estrutura do XML
+            condition_block = stack_block['value']['IF0']['block']
+            conditions.append(extract_condition(condition_block))
+            # Corrigido: Verificação e extração da condição 'ELSE'
+            if 'ELSE' in stack_block['statement']:
+                else_condition_block = stack_block['statement']['ELSE']['block']
+                conditions.append(extract_condition(else_condition_block))
     return conditions
 
 
@@ -230,7 +226,7 @@ def extract_condition(condition_block):
     if condition_block['@type'] == 'logic_compare':
         variable_id = condition_block['value']['A']['block']['field']['@id']
         comparison_value = \
-        condition_block['value']['B']['block']['field']['#text']
+            condition_block['value']['B']['block']['field']['#text']
         condition = {
             'variable_id': variable_id,
             'comparison_value': comparison_value
@@ -243,28 +239,31 @@ async def run_bot_logic(websocket: WebSocket):
     max_reconnect_attempts = 10
     reconnect_attempts = 0
 
-    while appState["running"]: # Garante que a reconexão ocorra apenas se o bot estiver "running"
+    while appState["running"]:
         try:
             async with websockets.connect(uri, timeout=60) as deriv_ws:
                 logging.info("Connected to Deriv WebSocket")
-                reconnect_attempts = 0 # Reseta a contagem de tentativas após conexão bem-sucedida
+                reconnect_attempts = 0  # Reseta as tentativas após reconexão
                 await deriv_ws.send(json.dumps({"authorize": API_TOKEN}))
                 async for message in deriv_ws:
                     response = json.loads(message)
-                    await handle_deriv_response(websocket, deriv_ws, response)
-
-        except (websockets.ConnectionClosedError, asyncio.TimeoutError, Exception) as e:
+                    await handle_deriv_response(websocket, deriv_ws,
+                                                response)
+        except (websockets.ConnectionClosedError, asyncio.TimeoutError,
+                Exception) as e:
             logging.error(f"WebSocket connection error: {e}")
             reconnect_attempts += 1
             if reconnect_attempts <= max_reconnect_attempts:
-                logging.info(f"Attempting to reconnect ({reconnect_attempts}/{max_reconnect_attempts}) in 5 seconds...")
+                logging.info(
+                    f"Attempting to reconnect ({reconnect_attempts}/{max_reconnect_attempts}) in 5 seconds...")
                 await asyncio.sleep(5)
             else:
                 logging.error("Max reconnect attempts reached. Stopping bot.")
-                appState["running"] = False  # Para o bot após o número máximo de tentativas
+                appState["running"] = False
+
 
 async def handle_deriv_response(websocket: WebSocket, deriv_ws,
-                                 response):
+                                response):
     if response.get("error"):
         await websocket.send_text(json.dumps(
             {"type": "error", "message": response["error"]["message"]}))
@@ -307,7 +306,7 @@ async def handle_deriv_response(websocket: WebSocket, deriv_ws,
         logging.info(f"Received proposal: {response}")
         if appState["running"]:
             await buy_contract(deriv_ws, response["proposal"]["id"],
-                              appState["stake"], websocket)
+                               appState["stake"], websocket)
     elif msg_type == "sell":
         sold_for = float(response["sell"]["sold_for"])
         profit = sold_for - appState["stake"]
@@ -321,7 +320,7 @@ async def handle_deriv_response(websocket: WebSocket, deriv_ws,
             appState["stake"] *= appState.get("MartingaleFactor", 2.5)
 
         appState["NextTradeCondition"] = "Odd" if appState[
-                                                    "NextTradeCondition"] == "Even" else "Even"
+                                                      "NextTradeCondition"] == "Even" else "Even"
         logging.info(
             f"Contract finalized. Profit: {profit}, New Stake: {appState['stake']}, Next Trade: {appState['NextTradeCondition']}")
 
@@ -339,6 +338,7 @@ async def handle_deriv_response(websocket: WebSocket, deriv_ws,
 
         await execute_strategy(websocket, deriv_ws)
 
+
 async def request_proposal(deriv_ws, stake, symbol, trade_type):
     await deriv_ws.send(json.dumps({
         "proposal": 1,
@@ -350,40 +350,39 @@ async def request_proposal(deriv_ws, stake, symbol, trade_type):
         "duration_unit": "t",
         "symbol": symbol
     }))
-    logging.info(
-        f"Requested proposal: Stake={stake}, Symbol={symbol}, Type={trade_type}")
+    response = await deriv_ws.recv()  # Aguarda e recebe a resposta da Deriv
+    response = json.loads(
+        response)  # Converte para um dicionário
+    logging.info(f"Proposal response: {response}")
+
 
 async def buy_contract(deriv_ws, proposal_id, stake, websocket):
     await deriv_ws.send(json.dumps({
         "buy": proposal_id,
         "price": f"{float(stake):.2f}"
     }))
-    logging.info(
-        f"Buying contract: Proposal ID={proposal_id}, Stake={stake}")
+    response = await deriv_ws.recv()  # Aguarda e recebe a resposta da Deriv
+    response = json.loads(
+        response)  # Converte para um dicionário
+    logging.info(f"Buy contract response: {response}")
+
 
 async def execute_strategy(websocket: WebSocket, deriv_ws):
-    logging.info(
-        f"Executing strategy. Next Trade Condition: {appState['NextTradeCondition']}")
+    logging.info(f"Executing strategy - appState: {appState}")
 
-    trade_type = None
+    # Lógica de compra direta (sem condições adicionais):
     if appState["NextTradeCondition"] == "Even":
-        for condition in appState["strategy"].get('purchase_conditions', []):
-            if appState.get(condition.get(
-                    'variable_id')) == condition.get('comparison_value'):
-                trade_type = appState["strategy"]["trade_config"].get(
-                    "TRADETYPE_LIST")
+        trade_type = appState["strategy"]["trade_config"].get("TRADETYPE_LIST")
     elif appState["NextTradeCondition"] == "Odd":
-        # Implement the logic to get the correct trade_type from appState['strategy']
-        for condition in appState["strategy"].get('purchase_conditions',
-                                                  []):
-            if appState.get(condition.get(
-                    'variable_id')) == condition.get('comparison_value'):
-                trade_type = appState["strategy"]["trade_config"].get(
-                    "TRADETYPE_LIST")
+        trade_type = appState["strategy"]["trade_config"].get("TRADETYPE_LIST")
+
     if trade_type:
-        logging.info(
-            f"Sending proposal: {trade_type}, Symbol: {appState['trade_config'].get('SYMBOL_LIST')}")
-        await request_proposal(deriv_ws, appState["stake"], appState['trade_config'].get('SYMBOL_LIST'), trade_type)
+        try:
+            logging.info(f"Sending proposal: {trade_type}, Symbol: {appState['trade_config'].get('SYMBOL_LIST')}")
+            await request_proposal(deriv_ws, appState["stake"], appState['trade_config'].get('SYMBOL_LIST'), trade_type)
+        except Exception as e:
+            logging.error(f"Error in 'execute_strategy': {e}")
+
 
 
 if __name__ == "__main__":
