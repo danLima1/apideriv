@@ -1,18 +1,18 @@
 <xml xmlns="http://www.w3.org/1999/xhtml" collection="false">
   <variables>
-    <variable type="" id="!sPpkT(-Md2E|~5Tg7SM">Win amount</variable>
-    <variable type="" id="PKB=x0wNz#+(C}b.||Ax">Digit 1</variable>
-    <variable type="" id="~XMeLFy`ErPgoViYdCsD">Stake</variable>
-    <variable type="" id="dWWxN*eYBP|u6~y-{jII">Digit 2</variable>
-    <variable type="" id="G/?_wLJ2yJ_M,Hr1|zMj">Take profit</variable>
-    <variable type="" id="FqZ_l49*/nJb22vYasr!">Tick 1</variable>
-    <variable type="" id="F~^+zw|Zdbu,2FGnMb(D">Color Digit 2</variable>
-    <variable type="" id="sA@T,Ps2~Vj_Z=PTi+sf">Max Stake</variable>
-    <variable type="" id="D?3gP4OACIxL{2W5Jk=U">Stop Lose</variable>
-    <variable type="" id="2T-YAUyeH|RCA/|F2Y9%">Tick 2</variable>
-    <variable type="" id="k}Yy=$1ttwy4|P3C?c2(">martingle</variable>
-    <variable type="" id="0+P{ya=$|C,Iq!PBw]{e">Tick 3</variable>
-    <variable type="" id="RyH)%@h?Fgb!-Nqq._Kn">Color Digit 1</variable>
+    <variable type="" id="!sPpkT(-Md2E|~5Tg7SM">100 </variable>
+    <variable type="" id="PKB=x0wNz#+(C}b.||Ax">100 </variable>
+    <variable type="" id="~XMeLFy`ErPgoViYdCsD">100</variable>
+    <variable type="" id="dWWxN*eYBP|u6~y-{jII">100 </variable>
+    <variable type="" id="G/?_wLJ2yJ_M,Hr1|zMj">100 </variable>
+    <variable type="" id="FqZ_l49*/nJb22vYasr!">100 </variable>
+    <variable type="" id="F~^+zw|Zdbu,2FGnMb(D">100  </variable>
+    <variable type="" id="sA@T,Ps2~Vj_Z=PTi+sf"> 100</variable>
+    <variable type="" id="D?3gP4OACIxL{2W5Jk=U"> 100</variable>
+    <variable type="" id="2T-YAUyeH|RCA/|F2Y9%">100 </variable>
+    <variable type="" id="k}Yy=$1ttwy4|P3C?c2(">100</variable>
+    <variable type="" id="0+P{ya=$|C,Iq!PBw]{e">100</variable>
+    <variable type="" id="RyH)%@h?Fgb!-Nqq._Kn">100</variable>
   </variables>
   <block type="trade" id="xgH69|xFn9=70w.*3Vo@" x="0" y="0">
     <field name="MARKET_LIST">synthetic_index</field>

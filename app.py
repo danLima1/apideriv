@@ -1,27 +1,35 @@
-import os
 import json
 import uvicorn
 import xmltodict
 import asyncio
 import websockets
-import pdb  # Para usar o debugger
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pathlib import Path
 from pydantic import BaseModel
 import logging
+import os
 
+# Carrega as variáveis de ambiente do arquivo .env
 load_dotenv()
 
+# Obtém o token da API e a porta das variáveis de ambiente
 API_TOKEN = os.getenv("API_TOKEN")
 PORT = int(os.getenv("PORT", 3001))
 
+# Variável global para armazenar a conexão WebSocket
+deriv_ws = None
+
+# Verifica se o token da API foi definido
 if not API_TOKEN:
     raise ValueError("API_TOKEN não está definida nas variáveis de ambiente. "
                      "Crie um arquivo .env e defina a variável API_TOKEN.")
 
+# Cria a aplicação FastAPI
 app = FastAPI()
+
+# Adiciona o middleware CORS para permitir solicitações de qualquer origem
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,6 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Define o estado inicial da aplicação
 initialAppState = {
     "stake": 1,
     "initialStake": None,
@@ -47,7 +56,9 @@ initialAppState = {
     "running": False,
     "botName": None,
     "trade_config": {},
-    "NextTradeCondition": "Even"
+    "NextTradeCondition": "Even",
+    "stop_operations": False,  # Adicionado para controlar operações de compra
+    "tick_subscription_id": None  # Adicionado para armazenar o ID de inscrição dos ticks
 }
 appState = initialAppState.copy()
 
@@ -116,6 +127,35 @@ async def set_target_profit(config: TargetProfitConfig):
             "targetProfit": appState["targetProfit"]}
 
 
+# Função para fechar a conexão WebSocket
+async def close_websocket_connection():
+    global deriv_ws
+    if deriv_ws and deriv_ws.open:
+        logging.info("Closing existing WebSocket connection...")
+        await deriv_ws.close()
+        deriv_ws = None
+
+
+# Função para desinscrever dos ticks do bot anterior
+async def unsubscribe_ticks():
+    global deriv_ws
+    if deriv_ws and appState.get("tick_subscription_id"):
+        await deriv_ws.send(json.dumps({
+            "forget": appState["tick_subscription_id"]
+        }))
+        appState["tick_subscription_id"] = None
+        logging.info("Unsubscribed from previous tick updates")
+
+
+# Rota para sinalizar o término do bot
+@app.post("/api/stop")
+async def api_stop_bot():
+    appState["running"] = False
+    appState["stop_operations"] = True  # Adicionado para parar operações de compra
+    logging.info("Stopping bot")
+    return {"message": "Bot stopped but still updating tick values"}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -126,9 +166,11 @@ async def websocket_endpoint(websocket: WebSocket):
             if command == "start":
                 bot_name = data.get("botName")
                 logging.info(f"Starting bot: {bot_name}")
+                appState["stop_operations"] = False  # Reseta o estado de operações ao iniciar
                 await start_bot_logic(websocket, bot_name)
             elif command == "stop":
                 appState["running"] = False
+                appState["stop_operations"] = True  # Adicionado para parar operações de compra
                 logging.info("Stopping bot")
                 await websocket.send_text(
                     json.dumps({"type": "status", "message": "Bot stopped"}))
@@ -139,6 +181,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 async def start_bot_logic(websocket: WebSocket, bot_name: str):
+    global deriv_ws
+
     appState["botName"] = bot_name
     xml_file_path = Path(f"bots/{bot_name}.xml")
     if not xml_file_path.exists():
@@ -162,26 +206,25 @@ async def start_bot_logic(websocket: WebSocket, bot_name: str):
         logging.error(f"Error reading bot XML file: {str(e)}")
         return
 
-    appState["running"] = True
-    logging.info(f"Bot {bot_name} is running with config: {appState}")
-    await run_bot_logic(websocket)
+    await close_websocket_connection()  # Fecha a conexão WebSocket existente
+    await run_bot_logic(websocket)  # Inicia a lógica do bot com uma nova conexão WebSocket
 
 
 def initialize_variables(variables, bot_name):
     variable_mappings = {
         "stake": "gsQah}04l(VNTYJ`*;{Y",
         "initialStake": "gsQah}04l(VNTYJ`*;{Y",
-        "MartingaleFactor": "...",  # Coloque o ID correto da variável MartingaleFactor
+        "MartingaleFactor": "id_da_variável_martingale",
         "targetProfit": "oQ~TQa?Dq78]MM},5;*l",
         "stopLoss": "ITiw_xSBxuYP6qNF)F|h",
         "NextTradeCondition": "j4S-npH54+xL{.HbzV3c",
     }
     for variable in variables:
         var_id = variable["@id"]
-        var_value = float(variable["#text"]) if variable["#text"] else 0.0
+        var_value = variable["#text"]  # Manter o valor como string
         for key, mapped_id in variable_mappings.items():
             if var_id == mapped_id:
-                appState[key] = var_value
+                appState[key] = var_value  # Armazena o valor da variável
     logging.info(
         f"Initialized variables for bot {bot_name}: {appState}")
 
@@ -206,60 +249,74 @@ def extract_trade_config(trade_block):
     return trade_config
 
 
-def extract_purchase_conditions(purchase_block):
+def get_purchase_conditions_from_editor():
+    """Essa função precisa receber os dados do editor da Deriv e extrair
+    as condições de compra (IDs das variáveis, operadores de comparação, etc.).
+
+    É importante notar que a implementação dessa função
+    depende do formato e da estrutura exata dos dados que o
+    editor "Bot" da Deriv envia para o seu código.
+    """
+
     conditions = []
-    if 'statement' in purchase_block and 'BEFOREPURCHASE_STACK' in purchase_block['statement']:
-        stack_block = purchase_block['statement']['BEFOREPURCHASE_STACK']['block']
-        if stack_block['@type'] == 'controls_if':
-            # Corrigido: Navegação correta pela estrutura do XML
-            condition_block = stack_block['value']['IF0']['block']
-            conditions.append(extract_condition(condition_block))
-            # Corrigido: Verificação e extração da condição 'ELSE'
-            if 'ELSE' in stack_block['statement']:
-                else_condition_block = stack_block['statement']['ELSE']['block']
-                conditions.append(extract_condition(else_condition_block))
+    # ... código para extrair informações de compra da API Deriv Bot
+    #  e adicioná-los em 'conditions' (similar a 'extract_purchase_conditions').
+    #  Por exemplo, obter os IDs de variáveis, operadores, valores da API do bot
+
     return conditions
 
 
-def extract_condition(condition_block):
-    condition = {}
-    if condition_block['@type'] == 'logic_compare':
-        variable_id = condition_block['value']['A']['block']['field']['@id']
-        comparison_value = \
-            condition_block['value']['B']['block']['field']['#text']
-        condition = {
-            'variable_id': variable_id,
-            'comparison_value': comparison_value
-        }
-    return condition
-
-
 async def run_bot_logic(websocket: WebSocket):
+    global deriv_ws
     uri = "wss://ws.binaryws.com/websockets/v3?app_id=1089"
     max_reconnect_attempts = 10
     reconnect_attempts = 0
 
-    while appState["running"]:
-        try:
-            async with websockets.connect(uri, timeout=60) as deriv_ws:
-                logging.info("Connected to Deriv WebSocket")
-                reconnect_attempts = 0  # Reseta as tentativas após reconexão
-                await deriv_ws.send(json.dumps({"authorize": API_TOKEN}))
-                async for message in deriv_ws:
-                    response = json.loads(message)
-                    await handle_deriv_response(websocket, deriv_ws,
-                                                response)
-        except (websockets.ConnectionClosedError, asyncio.TimeoutError,
-                Exception) as e:
-            logging.error(f"WebSocket connection error: {e}")
-            reconnect_attempts += 1
-            if reconnect_attempts <= max_reconnect_attempts:
-                logging.info(
-                    f"Attempting to reconnect ({reconnect_attempts}/{max_reconnect_attempts}) in 5 seconds...")
-                await asyncio.sleep(5)
+    try:
+        async with websockets.connect(uri, timeout=60) as ws:
+            deriv_ws = ws
+            logging.info("Connected to Deriv WebSocket")
+            reconnect_attempts = 0
+            await deriv_ws.send(json.dumps({"authorize": API_TOKEN}))
+
+            # Verificar a autorização antes de enviar outras mensagens
+            auth_response = await deriv_ws.recv()
+            auth_response = json.loads(auth_response)
+            if auth_response.get("error"):
+                logging.error(f"Authorization error: {auth_response['error']['message']}")
+                return
             else:
-                logging.error("Max reconnect attempts reached. Stopping bot.")
-                appState["running"] = False
+                logging.info("Authorized successfully")
+
+            await unsubscribe_ticks()  # Desinscreve dos ticks do bot anterior
+            await deriv_ws.send(json.dumps({"balance": 1, "subscribe": 1}))
+            await deriv_ws.send(json.dumps(
+                {"ticks": appState['trade_config'].get('SYMBOL_LIST', 'R_50'),
+                 "subscribe": 1}))
+            logging.info(
+                f"Subscribed to ticks for symbol: {appState['trade_config'].get('SYMBOL_LIST', 'R_50')}")
+
+            # Loop infinito para manter a conexão WebSocket ativa
+            while True:
+                response = await deriv_ws.recv()
+                response = json.loads(response)
+                await handle_deriv_response(websocket, deriv_ws, response)
+
+                # Lógica de compra/venda apenas se o bot estiver ativo e operações não estiverem paradas
+                if appState["running"] and not appState["stop_operations"]:
+                    await execute_strategy(websocket, deriv_ws)
+
+    except (websockets.ConnectionClosedError, asyncio.TimeoutError,
+            Exception) as e:
+        logging.error(f"WebSocket connection error: {e}")
+        reconnect_attempts += 1
+        if reconnect_attempts <= max_reconnect_attempts:
+            logging.info(
+                f"Attempting to reconnect ({reconnect_attempts}/{max_reconnect_attempts}) in 5 seconds...")
+            await asyncio.sleep(5)
+        else:
+            logging.error("Max reconnect attempts reached. Stopping bot.")
+            appState["running"] = False
 
 
 async def handle_deriv_response(websocket: WebSocket, deriv_ws,
@@ -297,6 +354,7 @@ async def handle_deriv_response(websocket: WebSocket, deriv_ws,
             f"Balance updated: {appState['balance']}, Change: {balance_change}")
     elif msg_type == "tick":
         appState["lastTick"] = float(response["tick"]["quote"])
+        appState["tick_subscription_id"] = response["tick"]["id"]  # Armazena o ID de inscrição dos ticks
         await websocket.send_text(json.dumps({
             "type": "tick",
             "tick": appState["lastTick"]
@@ -304,7 +362,7 @@ async def handle_deriv_response(websocket: WebSocket, deriv_ws,
         logging.info(f"Received tick: {appState['lastTick']}")
     elif msg_type == "proposal":
         logging.info(f"Received proposal: {response}")
-        if appState["running"]:
+        if appState["running"] and not appState["stop_operations"]:
             await buy_contract(deriv_ws, response["proposal"]["id"],
                                appState["stake"], websocket)
     elif msg_type == "sell":
@@ -336,10 +394,8 @@ async def handle_deriv_response(websocket: WebSocket, deriv_ws,
             "profitType": profit_type
         }))
 
-        await execute_strategy(websocket, deriv_ws)
 
-
-async def request_proposal(deriv_ws, stake, symbol, trade_type):
+async def request_proposal(deriv_ws, stake, symbol, trade_type, **kwargs):
     await deriv_ws.send(json.dumps({
         "proposal": 1,
         "amount": f"{float(stake):.2f}",
@@ -348,11 +404,11 @@ async def request_proposal(deriv_ws, stake, symbol, trade_type):
         "currency": "USD",
         "duration": 1,
         "duration_unit": "t",
-        "symbol": symbol
+        "symbol": symbol,
+        # ... kwargs (restante dos argumentos), adicione a chave para os argumentos do bot
     }))
-    response = await deriv_ws.recv()  # Aguarda e recebe a resposta da Deriv
-    response = json.loads(
-        response)  # Converte para um dicionário
+    response = await deriv_ws.recv()
+    response = json.loads(response)
     logging.info(f"Proposal response: {response}")
 
 
@@ -366,23 +422,71 @@ async def buy_contract(deriv_ws, proposal_id, stake, websocket):
         response)  # Converte para um dicionário
     logging.info(f"Buy contract response: {response}")
 
+    # Adicionado para enviar resposta de compra ao WebSocket do cliente
+    if response.get("error"):
+        await websocket.send_text(json.dumps(
+            {"type": "error", "message": response["error"]["message"]}))
+    else:
+        await websocket.send_text(json.dumps({
+            "type": "buy",
+            "contract_id": response.get("buy", {}).get("contract_id"),
+            "longcode": response.get("buy", {}).get("longcode"),
+        }))
+
 
 async def execute_strategy(websocket: WebSocket, deriv_ws):
     logging.info(f"Executing strategy - appState: {appState}")
 
-    # Lógica de compra direta (sem condições adicionais):
-    if appState["NextTradeCondition"] == "Even":
-        trade_type = appState["strategy"]["trade_config"].get("TRADETYPE_LIST")
-    elif appState["NextTradeCondition"] == "Odd":
-        trade_type = appState["strategy"]["trade_config"].get("TRADETYPE_LIST")
+    # Verifica se a estratégia possui condições específicas de compra
+    trade_type = appState["strategy"]["trade_config"].get("TRADETYPE_LIST")
+    symbol = appState["strategy"]["trade_config"].get("SYMBOL_LIST")
 
-    if trade_type:
-        try:
-            logging.info(f"Sending proposal: {trade_type}, Symbol: {appState['trade_config'].get('SYMBOL_LIST')}")
-            await request_proposal(deriv_ws, appState["stake"], appState['trade_config'].get('SYMBOL_LIST'), trade_type)
-        except Exception as e:
-            logging.error(f"Error in 'execute_strategy': {e}")
+    # Se houver um 'lastTick' válido,
+    if appState["lastTick"] is not None:
+        if appState["NextTradeCondition"] == "Even":
+            # Chama get_purchase_conditions_from_editor para obter as condições
+            purchase_conditions = get_purchase_conditions_from_editor()
 
+            # Caso o trade_type e symbol existam, e a condição da API for True:
+            if trade_type and symbol and purchase_conditions and check_purchase_conditions(purchase_conditions):
+                # Realiza uma compra no estado "Even"
+                logging.info(f"Strategy conditions met. Requesting proposal for {trade_type} on {symbol}.")
+                try:
+                    await request_proposal(deriv_ws, appState["stake"], symbol, trade_type)
+                    appState["NextTradeCondition"] = "Odd"  # Mudar para o estado "Odd" após compra
+                    logging.info(f"Changed state to Odd")
+                except Exception as e:
+                    logging.error(f"Error in 'execute_strategy': {e}")
+        else:
+            if trade_type and symbol:
+                logging.info("Next Trade Condition is 'Odd', waiting for new conditions")
+
+
+# Verificação de condições para compra
+def check_purchase_conditions(conditions):
+    # Aqui, adicione a sua lógica para comparar as condições
+    #  recebidas pelo editor "Bot" com as variáveis do appState
+    # (Você deve ter 'conditions' já extraídas pela 'get_purchase_conditions_from_editor'.)
+
+    # Por exemplo, compare 'lastTick' e valores obtidos da função get_purchase_conditions_from_editor()
+    for condition in conditions:
+        # Realizar a verificação da condição com base nos operadores do XML
+        # e  as variáveis que correspondem aos IDs de variáveis.
+        #  Por exemplo,  comparar o 'lastTick' (que você obtém de appState)
+        #  com um valor definido pelo bot da API Deriv:
+        variable_id = condition.get("variable_id")  # Id da variável da condição
+        comparison_value = condition.get("comparison_value")
+        operator = condition.get("operator")  # Operador (>, <, =, etc.)
+        variable_value = appState.get(variable_id)  # Verifique se o ID da variável é reconhecido e extrair seu valor
+
+        # Só processar a condição se o ID da variável for válido:
+        if variable_value is not None:
+            if operator == "=":
+                return variable_value == comparison_value  # Comparação de string
+            # ... (outros comparadores, como >, <, >=, <=, se aplicáveis)
+            # Use a comparação adequada para os comparadores e tipo de variável
+
+    return False
 
 
 if __name__ == "__main__":
