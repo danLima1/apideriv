@@ -1,17 +1,17 @@
 ﻿<xml xmlns="http://www.w3.org/1999/xhtml" collection="false">
   <variables>
-    <variable type="" id="ITiw_xSBxuYP6qNF)F|h">100</variable>
-    <variable type="" id="oQ~TQa?Dq78]MM},5;*l">100</variable>
-    <variable type="" id="gsQah}04l(VNTYJ`*;{Y"> 100</variable>
-    <variable type="" id="KaO9g@ULafq66uv?o*cA"> 100</variable>
-    <variable type="" id="j4S-npH54+xL{.HbzV3c">Even</variable>
+    <variable type="" id="ITiw_xSBxuYP6qNF)F|h">Max Loss Amount</variable>
+    <variable type="" id="oQ~TQa?Dq78]MM},5;*l">Expected Profit</variable>
+    <variable type="" id="gsQah}04l(VNTYJ`*;{Y">Initial Amount</variable>
+    <variable type="" id="KaO9g@ULafq66uv?o*cA">Win Amount</variable>
+    <variable type="" id="j4S-npH54+xL{.HbzV3c">Next Trade Condition</variable>
   </variables>
   <block type="trade" id="trade" x="-229" y="-91">
     <field name="MARKET_LIST">volidx</field>
     <field name="SUBMARKET_LIST">random_index</field>
     <field name="SYMBOL_LIST">R_50</field>
     <field name="TRADETYPECAT_LIST">digits</field>
-    <field name="TRADETYPE_LIST">overunder</field>
+    <field name="TRADETYPE_LIST">overunder</field>a
     <field name="TYPE_LIST">both</field>
     <field name="CANDLEINTERVAL_LIST">60</field>
     <field name="TIME_MACHINE_ENABLED">FALSE</field>
