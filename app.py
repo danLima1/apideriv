@@ -16,13 +16,28 @@ API_TOKEN = "WWrzI6hLQ4SdfYP"  # Substitua com seu Token real
 # Configuração do logger
 logging.basicConfig(level=logging.INFO)
 
+# Dicionário de mapeamento de tipos de contrato
+TRADETYPE_MAPPING = {
+    'overunder': 'DIGITOVER',  # Adicione mapeamentos conforme necessário
+    'CALL': 'CALL',
+    'PUT': 'PUT',
+    'DIGITOVER': 'DIGITOVER',
+    'DIGITUNDER': 'DIGITUNDER',
+    # Adicione outros mapeamentos conforme necessário
+}
+
+# Dicionário de parâmetros necessários para cada tipo de contrato
+CONTRACT_REQUIRED_PARAMS = {
+    'DIGITOVER': ['prediction'],
+    'DIGITUNDER': ['prediction'],
+    # Adicione outros tipos de contrato e seus parâmetros necessários conforme necessário
+}
 
 def read_bot_config(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         xml_content = file.read()
     xml_dict = xmltodict.parse(xml_content)
     return extract_strategy(xml_dict['xml']['block'])
-
 
 def extract_strategy(blocks):
     if not isinstance(blocks, list):
@@ -34,15 +49,17 @@ def extract_strategy(blocks):
     logging.info(f"Extracted strategy: {strategy}")
     return strategy
 
-
 def extract_trade_config(trade_block):
     trade_config = {}
     for field in trade_block.get('field', []):
         field_name = field['@name']
         field_value = field['#text']
-        trade_config[field_name] = field_value
+        if field_name == 'TRADETYPE_LIST':
+            # Verificar se o valor está no mapeamento, caso contrário, usar um valor padrão
+            trade_config[field_name] = TRADETYPE_MAPPING.get(field_value, 'CALL')
+        else:
+            trade_config[field_name] = field_value
     return trade_config
-
 
 class DerivClient:
     def __init__(self, token, bot_config):
@@ -105,24 +122,36 @@ class DerivClient:
                 await self.connect()
             if self.websocket:
                 trade_config = self.bot_config.get('trade_config', {})
+                contract_type = trade_config.get("TRADETYPE_LIST", "CALL")
                 buy_request = {
                     "buy": 1,
                     "price": float(trade_config.get("AMOUNT", 1.00)),
                     "parameters": {
                         "amount": float(trade_config.get("AMOUNT", 1.00)),
                         "basis": "stake",
-                        "contract_type": trade_config.get("TRADETYPE_LIST", "CALL"),
+                        "contract_type": contract_type,
                         "currency": trade_config.get("CURRENCY_LIST", "USD"),
                         "duration": int(trade_config.get("DURATION", 5)),
                         "duration_unit": trade_config.get("DURATIONTYPE_LIST", "t"),
                         "symbol": trade_config.get("SYMBOL_LIST", "R_50"),  # Usar o símbolo correto do bot
                     }
                 }
+
+                # Adicionar parâmetros obrigatórios específicos para cada tipo de contrato
+                required_params = CONTRACT_REQUIRED_PARAMS.get(contract_type, [])
+                for param in required_params:
+                    param_value = trade_config.get(param.upper(), None)
+                    if param_value:
+                        buy_request["parameters"][param] = param_value
+
                 await self.websocket.send(json.dumps(buy_request))
                 buy_response = await self.websocket.recv()
                 logging.info(f"Buy Response: {buy_response}")
 
                 buy_data = json.loads(buy_response)
+                if 'error' in buy_data:
+                    raise Exception(buy_data['error']['message'])
+
                 balance_after = buy_data['buy']['balance_after']
                 profit_loss = balance_after - self.initial_balance
                 self.total_profit_loss += profit_loss
@@ -167,12 +196,10 @@ class DerivClient:
             if self.websocket:
                 await self.websocket.close()
 
-
 @app.route('/api/list-bots', methods=['GET'])
 def list_bots_api():
     bots = [f for f in os.listdir('bots') if f.endswith('.xml')]
     return jsonify(bots)
-
 
 @app.route('/api/buy', methods=['POST'])
 def buy_contract():
@@ -195,7 +222,6 @@ def buy_contract():
 
     return jsonify({"message": "Compra realizada com sucesso"})
 
-
 @app.route('/api/balance', methods=['GET'])
 def get_balance():
     bot_config = {
@@ -212,13 +238,11 @@ def get_balance():
     balance = asyncio.run(client.get_balance())
     return jsonify({"balance": balance, "total_profit_loss": client.total_profit_loss})
 
-
 @app.route('/')
 def index():
     return send_from_directory('', 'index.html')
 
-
 if __name__ == "__main__":
     if not os.path.exists('bots'):
         os.makedirs('bots')
-    socketio.run(app, debug=True)
+    socketio.run(app, debug=True, allow_unsafe_werkzeug=True)
